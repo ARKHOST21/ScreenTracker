@@ -77,10 +77,6 @@ Screen Tracker is available in the following languages:
 
 Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for more details.
 
-## Support
-
-If you find this project useful, consider supporting its development by [buying me a coffee](https://www.buymeacoffee.com/YuriKaramian).
-
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
