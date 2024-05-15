@@ -55,7 +55,7 @@ Screen Tracker is an open-source application that captures screenshots at regula
 
 For users who prefer a portable version, download the latest release from SourceForge:
 
-[Download Portable Edition](https://sourceforge.net/projects/screentracker/files/releases/latest/download)
+[Download Portable Edition](https://sourceforge.net/projects/screentracker/files/releases/)
 
 ## Languages
 
