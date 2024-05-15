@@ -88,29 +88,3 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 Special thanks to all the contributors and the open-source community for their support.
 
-### Final Project Structure
-
-screen-tracker/
-├── src/
-│   ├── main.py
-│   ├── icons/
-│   │   ├── app_icon.ico
-│   │   └── app_icon.png
-│   ├── lang/
-│   │   ├── english.json
-│   │   ├── dutch.json
-│   │   ├── spanish.json
-│   │   ├── russian.json
-│   │   ├── italian.json
-│   │   ├── german.json
-│   │   ├── french.json
-│   │   ├── armenian.json
-│   │   ├── georgian.json
-│   │   ├── bulgarian.json
-│   │   └── polish.json
-│   └── requirements.txt
-├── screenshots/
-│   ├── main_interface.png
-├── README.md
-└── LICENSE
-
