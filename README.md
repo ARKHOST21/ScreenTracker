@@ -73,10 +73,6 @@ Screen Tracker is available in the following languages:
 - Bulgarian
 - Polish
 
-## Contributing
-
-Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for more details.
-
 ## Support
 
 If you find this project useful, consider supporting its development by [buying me a coffee](https://www.buymeacoffee.com/YuriKaramian).
@@ -98,8 +94,6 @@ Special thanks to all the contributors and the open-source community for their s
 
 
 ### LICENSE
-
-Make sure the `LICENSE` file in your project directory contains the following content for the MIT License:
 
 MIT License
 
@@ -125,8 +119,6 @@ SOFTWARE.
 ```
 
 ### Final Project Structure
-
-Ensure your project directory looks like this:
 
 screen-tracker/
 ├── src/
