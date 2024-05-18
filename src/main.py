@@ -4,13 +4,24 @@ import datetime
 import json
 import shutil
 import time
-import psutil
-from PyQt5.QtWidgets import (QApplication, QMenu, qApp, QSystemTrayIcon, QGroupBox, QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QLineEdit, QMessageBox, QComboBox, QCheckBox, QDialog, QListWidget, QListWidgetItem, QAbstractItemView, QDialogButtonBox, QScrollArea)
+import subprocess
+from PyQt5.QtWidgets import (QApplication, QMenu, qApp, QSystemTrayIcon, QGroupBox, QWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QLineEdit, QMessageBox, QComboBox, QCheckBox, QDialog, QListWidget, QAbstractItemView, QDialogButtonBox, QScrollArea)
 from PyQt5.QtCore import QTimer, QDateTime, Qt
 from PyQt5.QtGui import QIcon, QPixmap
 from mss import mss
 from PIL import Image, ImageChops
 from dateutil.relativedelta import relativedelta
+import psutil  # Ensure psutil is imported
+
+# Constants
+SETTINGS_FILE = 'app_settings.json'
+DEFAULT_LANGUAGE = 'english'
+SUPPORTED_LANGUAGES = {
+    "English": "english", "Dutch": "dutch", "Spanish": "spanish", "Russian": "russian", "Italian": "italian",
+    "German": "german", "French": "french", "Armenian": "armenian", "Georgian": "georgian", "Bulgarian": "bulgarian",
+    "Polish": "polish"
+}
+TRAY_ICON_TOOLTIP = "app_title"
 
 # Determine if the app is frozen using PyInstaller
 if getattr(sys, 'frozen', False):
@@ -21,7 +32,9 @@ else:
 icon_folder_path = os.path.join(current_path, 'icons')
 icon_path = os.path.join(icon_folder_path, 'app_icon.ico')
 
+
 def load_translations(language_code):
+    """Load translations from the specified language file."""
     translation_file = os.path.join(current_path, 'lang', f'{language_code}.json')
     try:
         with open(translation_file, 'r', encoding='utf-8') as file:
@@ -30,134 +43,51 @@ def load_translations(language_code):
         QMessageBox.warning(None, "Translation Error", f"Translation file for language '{language_code}' not found.")
         return {}
 
-class ScreenshotViewer(QDialog):
-    def __init__(self, screenshot_folder, tr):
-        super().__init__()
-        self.tr = tr
-        self.setWindowTitle(tr("screenshot_viewer"))
-        self.setGeometry(100, 100, 800, 600)
-        self.screenshot_folder = screenshot_folder
-        self.current_folder = screenshot_folder
-
-        self.layout = QVBoxLayout(self)
-        
-        self.backButton = QPushButton(tr("back"))
-        self.backButton.clicked.connect(self.navigate_up)
-        self.layout.addWidget(self.backButton)
-        
-        self.scrollArea = QScrollArea(self)
-        self.imageLabel = QLabel(self)
-        self.imageLabel.setScaledContents(True)
-        self.scrollArea.setWidget(self.imageLabel)
-        self.layout.addWidget(self.scrollArea)
-        
-        self.screenshotList = QListWidget(self)
-        self.screenshotList.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.screenshotList.itemDoubleClicked.connect(self.navigate_down)
-        self.screenshotList.itemSelectionChanged.connect(self.load_selected_image)
-        self.layout.addWidget(self.screenshotList)
-        
-        self.load_screenshots(self.current_folder)
-        
-    def load_screenshots(self, folder):
-        self.screenshotList.clear()
-        self.imageLabel.clear()
-        self.current_folder = folder
-        if self.current_folder != self.screenshot_folder:
-            self.backButton.setEnabled(True)
-        else:
-            self.backButton.setEnabled(False)
-        for item_name in os.listdir(folder):
-            item_path = os.path.join(folder, item_name)
-            if os.path.isdir(item_path):
-                item = QListWidgetItem(f"[{self.tr('folder')}] {item_name}")
-            elif item_name.endswith(('.png', '.jpeg', '.jpg')):
-                item = QListWidgetItem(item_name)
-            else:
-                continue
-            item.setData(Qt.UserRole, item_path)
-            self.screenshotList.addItem(item)
-                
-    def load_selected_image(self):
-        selected_item = self.screenshotList.currentItem()
-        if selected_item and not selected_item.text().startswith(f"[{self.tr('folder')}]"):
-            image_path = selected_item.data(Qt.UserRole)
-            pixmap = QPixmap(image_path)
-            self.imageLabel.setPixmap(pixmap)
-            self.imageLabel.adjustSize()
-
-    def navigate_up(self):
-        parent_folder = os.path.dirname(self.current_folder)
-        if parent_folder and os.path.isdir(parent_folder):
-            self.load_screenshots(parent_folder)
-        
-    def navigate_down(self, item):
-        if item.text().startswith(f"[{self.tr('folder')}]"):
-            folder_path = item.data(Qt.UserRole)
-            if os.path.isdir(folder_path):
-                self.load_screenshots(folder_path)
 
 class WorkTrackerApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.language_code = 'english'  # Default language
+        self.language_code = DEFAULT_LANGUAGE
         self.translations = load_translations(self.language_code)
         self.tr = lambda key: self.translations.get(key, key)
-        self.setWindowTitle(self.tr("app_title"))
-        self.setGeometry(100, 100, 320, 400)
-        self.setWindowIcon(QIcon(icon_path))
         self.screenshots_folder = None
-        self.settings_file = 'app_settings.json'
-        self.max_folder_age = relativedelta(weeks=13)
         self.dark_mode_enabled = False
         self.screenshot_format = 'PNG'
         self.monitor_selection = []
-        self.retention_period_days = 30  # Default retention period
-        self.initUI()
-        self.load_settings()
+        self.retention_period_days = 30
+        self.is_capturing = False
         self.timer = QTimer()
         self.timer.timeout.connect(self.take_and_save_screenshots)
-        # System Tray Icon Setup
-        self.trayIcon = QSystemTrayIcon(self)
-        self.trayIcon.setIcon(QIcon(icon_path))
-        self.trayIcon.setToolTip(self.tr("app_title"))
 
-        # Right-click Menu for Tray Icon
-        trayMenu = QMenu()
-        openAction = trayMenu.addAction(self.tr("open"))
-        openAction.triggered.connect(self.showNormal)
-        exitAction = trayMenu.addAction(self.tr("exit"))
-        exitAction.triggered.connect(qApp.quit)
+        self.init_ui()
+        self.load_settings()
+        self.init_tray_icon()
+        self.init_cleanup_timer()
 
-        self.trayIcon.setContextMenu(trayMenu)
-        self.trayIcon.show()
-
-        # Automatic cleanup timer
-        self.cleanup_timer = QTimer()
-        self.cleanup_timer.timeout.connect(self.automatic_cleanup)
-        self.cleanup_timer.start(86400000)  # Run cleanup every 24 hours
-
-    def closeEvent(self, event):
-        """Override the close event to minimize to system tray."""
-        event.ignore()
-        self.hide()
-        self.trayIcon.showMessage(self.tr("app_title"), 
-                                  self.tr("minimized_to_tray"),
-                                  QSystemTrayIcon.Information,
-                                  2000)
-
-    def initUI(self):
+    def init_ui(self):
+        """Initialize the UI components."""
+        self.setWindowTitle(self.tr("app_title"))
+        self.setGeometry(100, 100, 320, 400)
+        self.setWindowIcon(QIcon(icon_path))
         self.layout = QVBoxLayout(self)
 
-        # Language Selection
+        self.init_language_selection()
+        self.init_general_settings()
+        self.init_monitor_selection()
+        self.init_control_management()
+        self.update_dark_mode()
+
+    def init_language_selection(self):
+        """Initialize the language selection components."""
         self.languageComboBox = QComboBox()
-        self.languageComboBox.addItems(["English", "Dutch", "Spanish", "Russian", "Italian", "German", "French", "Armenian", "Georgian", "Bulgarian", "Polish"])
+        self.languageComboBox.addItems(SUPPORTED_LANGUAGES.keys())
         self.languageComboBox.currentIndexChanged.connect(self.change_language)
-        self.languageLabel = QLabel("Select Language:")
+        self.languageLabel = QLabel(self.tr("select_language"))
         self.layout.addWidget(self.languageLabel)
         self.layout.addWidget(self.languageComboBox)
 
-        # General Settings Section
+    def init_general_settings(self):
+        """Initialize the general settings components."""
         generalSettingsGroup = QGroupBox(self.tr("general_settings"))
         generalLayout = QVBoxLayout()
 
@@ -187,16 +117,18 @@ class WorkTrackerApp(QWidget):
         generalSettingsGroup.setLayout(generalLayout)
         self.layout.addWidget(generalSettingsGroup)
 
-        # Monitor Selection Section
+    def init_monitor_selection(self):
+        """Initialize the monitor selection components."""
         monitorSelectionGroup = QGroupBox(self.tr("monitor_selection"))
         monitorLayout = QVBoxLayout()
         self.monitorCheckboxes = QVBoxLayout()
-        self.populateMonitorCheckboxes()
+        self.populate_monitor_checkboxes()
         monitorLayout.addLayout(self.monitorCheckboxes)
         monitorSelectionGroup.setLayout(monitorLayout)
         self.layout.addWidget(monitorSelectionGroup)
 
-        # Control and Management Section
+    def init_control_management(self):
+        """Initialize the control and management components."""
         controlGroup = QGroupBox(self.tr("control_management"))
         controlLayout = QVBoxLayout()
 
@@ -214,14 +146,6 @@ class WorkTrackerApp(QWidget):
         self.toggleDarkModeButton = QPushButton(self.tr("enable_dark_mode"))
         self.toggleDarkModeButton.clicked.connect(self.toggle_dark_mode)
         controlLayout.addWidget(self.toggleDarkModeButton)
-
-        self.exportSettingsButton = QPushButton(self.tr("export_settings"))
-        self.exportSettingsButton.clicked.connect(self.export_settings)
-        controlLayout.addWidget(self.exportSettingsButton)
-
-        self.importSettingsButton = QPushButton(self.tr("import_settings"))
-        self.importSettingsButton.clicked.connect(self.import_settings)
-        controlLayout.addWidget(self.importSettingsButton)
 
         self.viewScreenshotsButton = QPushButton(self.tr("view_screenshots"))
         self.viewScreenshotsButton.clicked.connect(self.open_screenshot_viewer)
@@ -248,30 +172,54 @@ class WorkTrackerApp(QWidget):
         controlGroup.setLayout(controlLayout)
         self.layout.addWidget(controlGroup)
 
+        # Disable stop button initially
+        self.stopButton.setEnabled(False)
+
+    def init_tray_icon(self):
+        """Initialize the system tray icon."""
+        self.trayIcon = QSystemTrayIcon(self)
+        self.trayIcon.setIcon(QIcon(icon_path))
+        self.trayIcon.setToolTip(self.tr(TRAY_ICON_TOOLTIP))
+
+        trayMenu = QMenu()
+        openAction = trayMenu.addAction(self.tr("open"))
+        openAction.triggered.connect(self.showNormal)
+        exitAction = trayMenu.addAction(self.tr("exit"))
+        exitAction.triggered.connect(qApp.quit)
+
+        self.trayIcon.setContextMenu(trayMenu)
+        self.trayIcon.show()
+
+    def init_cleanup_timer(self):
+        """Initialize the automatic cleanup timer."""
+        self.cleanup_timer = QTimer()
+        self.cleanup_timer.timeout.connect(self.automatic_cleanup)
+        self.cleanup_timer.start(86400000)  # Run cleanup every 24 hours
+
+    def closeEvent(self, event):
+        """Override the close event to minimize to system tray."""
+        event.ignore()
+        self.hide()
+        self.trayIcon.showMessage(self.tr("app_title"), 
+                                  self.tr("minimized_to_tray"),
+                                  QSystemTrayIcon.Information,
+                                  2000)
+
     def change_language(self):
-        language_map = {
-            "English": "english",
-            "Dutch": "dutch",
-            "Spanish": "spanish",
-            "Russian": "russian",
-            "Italian": "italian",
-            "German": "german",
-            "French": "french",
-            "Armenian": "armenian",
-            "Georgian": "georgian",
-            "Bulgarian": "bulgarian",
-            "Polish": "polish"
-        }
+        """Change the application language."""
         selected_language = self.languageComboBox.currentText()
-        self.language_code = language_map.get(selected_language, "english")
+        self.language_code = SUPPORTED_LANGUAGES.get(selected_language, DEFAULT_LANGUAGE)
         self.translations = load_translations(self.language_code)
         self.tr = lambda key: self.translations.get(key, key)
         self.update_ui_texts()
+        self.save_settings()
+        self.update_status_indicator(self.is_capturing)
 
     def update_ui_texts(self):
+        """Update UI texts to reflect the current language."""
         self.setWindowTitle(self.tr("app_title"))
         self.languageLabel.setText(self.tr("select_language"))
-        self.folderLabel.setText(self.tr("output_folder_not_set"))
+        self.folderLabel.setText(f"{self.tr('output_folder')}: {self.screenshots_folder if self.screenshots_folder else self.tr('output_folder_not_set')}")
         self.browseButton.setText(self.tr("set_output_folder"))
         self.intervalLabel.setText(self.tr("screenshot_interval"))
         self.formatLabel.setText(self.tr("screenshot_format"))
@@ -280,24 +228,23 @@ class WorkTrackerApp(QWidget):
         self.stopButton.setText(self.tr("stop"))
         self.statusIndicator.setText(self.tr("stopped"))
         self.toggleDarkModeButton.setText(self.tr("enable_dark_mode") if not self.dark_mode_enabled else self.tr("enable_light_mode"))
-        self.exportSettingsButton.setText(self.tr("export_settings"))
-        self.importSettingsButton.setText(self.tr("import_settings"))
         self.viewScreenshotsButton.setText(self.tr("view_screenshots"))
         self.diskSpaceButton.setText(self.tr("disk_space_info"))
         self.cleanFoldersButton.setText(self.tr("clean_folders"))
         self.cpu_label.setText(self.tr("cpu_usage") + ": 0%")
         self.memory_label.setText(self.tr("memory_usage") + ": 0%")
-        
+
         # Update group box titles
         self.layout.itemAt(2).widget().setTitle(self.tr("general_settings"))
         self.layout.itemAt(3).widget().setTitle(self.tr("monitor_selection"))
         self.layout.itemAt(4).widget().setTitle(self.tr("control_management"))
-        
+
         # Update monitor checkboxes
         for i in range(self.monitorCheckboxes.count()):
-            self.monitorCheckboxes.itemAt(i).widget().setText(f"{self.tr('monitor')} {i+1}")
+            self.monitorCheckboxes.itemAt(i).widget().setText(f"{self.tr('monitor')} {i + 1}")
 
-    def populateMonitorCheckboxes(self):
+    def populate_monitor_checkboxes(self):
+        """Populate monitor checkboxes based on available monitors."""
         with mss() as sct:
             for i, monitor in enumerate(sct.monitors[1:], start=1):
                 checkbox = QCheckBox(f"{self.tr('monitor')} {i}")
@@ -305,6 +252,7 @@ class WorkTrackerApp(QWidget):
                 self.monitorCheckboxes.addWidget(checkbox)
 
     def set_output_folder(self):
+        """Set the output folder for screenshots."""
         folder = QFileDialog.getExistingDirectory(self, self.tr("select_folder"))
         if folder:
             self.screenshots_folder = folder
@@ -312,6 +260,7 @@ class WorkTrackerApp(QWidget):
             self.save_settings()
 
     def start_capture(self):
+        """Start the screenshot capture process."""
         if not self.screenshots_folder:
             QMessageBox.warning(self, self.tr("output_folder_not_set"), self.tr("please_set_output_folder"))
             return
@@ -321,22 +270,30 @@ class WorkTrackerApp(QWidget):
                 raise ValueError(self.tr("interval_positive_integer"))
             interval_milliseconds = interval_minutes * 60 * 1000
             self.timer.start(interval_milliseconds)
+            self.is_capturing = True
             self.update_status_indicator(True)
+            self.startButton.setEnabled(False)
+            self.stopButton.setEnabled(True)
         except ValueError:
             QMessageBox.warning(self, self.tr("invalid_input"), self.tr("please_enter_valid_integer"))
 
     def stop_capture(self):
+        """Stop the screenshot capture process."""
         self.timer.stop()
+        self.is_capturing = False
         self.update_status_indicator(False)
+        self.startButton.setEnabled(True)
+        self.stopButton.setEnabled(False)
 
     def take_and_save_screenshots(self):
+        """Take and save screenshots from selected monitors."""
         if self.screenshots_folder:
             todays_folder = self.create_todays_folder()
             now = datetime.datetime.now()
 
             with mss() as sct:
                 for i, monitor in enumerate(sct.monitors[1:], start=1):
-                    if not self.monitorCheckboxes.layout().itemAt(i-1).widget().isChecked():
+                    if not self.monitorCheckboxes.layout().itemAt(i - 1).widget().isChecked():
                         continue
                     screenshot_file = f"screen_{i}_{now.strftime('%Y-%m-%d_%H-%M-%S')}.{self.formatComboBox.currentText().lower()}"
                     screenshot_path = os.path.join(todays_folder, screenshot_file)
@@ -350,11 +307,13 @@ class WorkTrackerApp(QWidget):
             self.update_status_indicator(True)
 
     def is_black_image(self, img):
+        """Check if the given image is completely black."""
         black = Image.new('RGB', img.size, (0, 0, 0))
         difference = ImageChops.difference(img, black)
         return not difference.getbbox()
 
     def update_status_indicator(self, is_capturing):
+        """Update the status indicator based on the capturing state."""
         if is_capturing:
             next_capture_time = QDateTime.currentDateTime().addSecs(int(self.intervalInput.text()) * 60)
             self.statusIndicator.setText(f'{self.tr("active")} - {self.tr("next_capture_at")}: {next_capture_time.toString("hh:mm:ss")}')
@@ -364,81 +323,57 @@ class WorkTrackerApp(QWidget):
         self.statusIndicator.adjustSize()
 
     def create_todays_folder(self):
+        """Create a folder for today's screenshots."""
         today = datetime.date.today()
         todays_folder = os.path.join(self.screenshots_folder, today.strftime("%Y-%m-%d"))
         os.makedirs(todays_folder, exist_ok=True)
         return todays_folder
 
     def toggle_dark_mode(self):
+        """Toggle dark mode on and off."""
         self.dark_mode_enabled = not self.dark_mode_enabled
         self.update_dark_mode()
+        self.save_settings()
 
     def update_dark_mode(self):
+        """Update the application's dark mode settings."""
         if self.dark_mode_enabled:
             self.setStyleSheet("QWidget { background-color: #353535; color: #FFFFFF; }")
             self.toggleDarkModeButton.setText(self.tr("enable_light_mode"))
         else:
             self.setStyleSheet("")
             self.toggleDarkModeButton.setText(self.tr("enable_dark_mode"))
-        self.save_settings()
 
     def save_settings(self):
+        """Save the current settings to a file."""
         settings = {
             'screenshots_folder': self.screenshots_folder,
             'dark_mode_enabled': self.dark_mode_enabled,
             'interval_minutes': self.intervalInput.text(),
             'screenshot_format': self.formatComboBox.currentText(),
             'retention_period_days': self.retentionInput.text(),
-            'selected_monitors': [self.monitorCheckboxes.layout().itemAt(i).widget().isChecked() for i in range(self.monitorCheckboxes.layout().count())]
+            'selected_monitors': [self.monitorCheckboxes.layout().itemAt(i).widget().isChecked() for i in range(self.monitorCheckboxes.layout().count())],
+            'language_code': self.language_code,
+            'is_capturing': self.is_capturing
         }
-        with open(self.settings_file, 'w') as f:
+        with open(SETTINGS_FILE, 'w') as f:
             json.dump(settings, f)
 
     def load_settings(self):
+        """Load settings from the settings file."""
         try:
-            with open(self.settings_file) as f:
+            with open(SETTINGS_FILE) as f:
                 settings = json.load(f)
-                self.screenshots_folder = settings.get('screenshots_folder')
-                self.dark_mode_enabled = settings.get('dark_mode_enabled', False)
-                self.intervalInput.setText(str(settings.get('interval_minutes', 5)))
-                self.formatComboBox.setCurrentText(settings.get('screenshot_format', 'PNG'))
-                self.retention_period_days = int(settings.get('retention_period_days', 30))
-                self.retentionInput.setText(str(self.retention_period_days))
-                for i, checked in enumerate(settings.get('selected_monitors', [])):
-                    if i < self.monitorCheckboxes.layout().count():
-                        self.monitorCheckboxes.layout().itemAt(i).widget().setChecked(checked)
-                self.update_dark_mode()
-                self.folderLabel.setText(f"{self.tr('output_folder')}: {self.screenshots_folder if self.screenshots_folder else self.tr('output_folder_not_set')}")
+                self.apply_settings(settings)
+                self.update_ui_texts()
+                self.update_language_combo_box()
+                if self.is_capturing:
+                    self.start_capture()
         except FileNotFoundError:
             pass
 
-    def export_settings(self):
-        options = QFileDialog.Options()
-        fileName, _ = QFileDialog.getSaveFileName(self, self.tr("export_settings"), "", "JSON Files (*.json)", options=options)
-        if fileName:
-            settings = {
-                'screenshots_folder': self.screenshots_folder,
-                'dark_mode_enabled': self.dark_mode_enabled,
-                'interval_minutes': self.intervalInput.text(),
-                'screenshot_format': self.formatComboBox.currentText(),
-                'retention_period_days': self.retentionInput.text(),
-                'selected_monitors': [self.monitorCheckboxes.layout().itemAt(i).widget().isChecked() for i in range(self.monitorCheckboxes.layout().count())]
-            }
-            with open(fileName, 'w') as file:
-                json.dump(settings, file)
-            QMessageBox.information(self, self.tr("export_successful"), self.tr("settings_exported_successfully"))
-
-    def import_settings(self):
-        options = QFileDialog.Options()
-        fileName, _ = QFileDialog.getOpenFileName(self, self.tr("import_settings"), "", "JSON Files (*.json)", options=options)
-        if fileName:
-            with open(fileName, 'r') as file:
-                settings = json.load(file)
-                self.apply_settings(settings)
-            QMessageBox.information(self, self.tr("import_successful"), self.tr("settings_imported_successfully"))
-            self.load_settings()
-
     def apply_settings(self, settings):
+        """Apply the loaded settings to the application."""
         self.screenshots_folder = settings.get('screenshots_folder')
         self.dark_mode_enabled = settings.get('dark_mode_enabled', False)
         self.intervalInput.setText(str(settings.get('interval_minutes', 5)))
@@ -448,22 +383,65 @@ class WorkTrackerApp(QWidget):
         for i, checked in enumerate(settings.get('selected_monitors', [])):
             if i < self.monitorCheckboxes.layout().count():
                 self.monitorCheckboxes.layout().itemAt(i).widget().setChecked(checked)
+        self.language_code = settings.get('language_code', DEFAULT_LANGUAGE)
+        self.translations = load_translations(self.language_code)
+        self.tr = lambda key: self.translations.get(key, key)
+        self.is_capturing = settings.get('is_capturing', False)
         self.update_dark_mode()
-        if self.screenshots_folder:
-            self.folderLabel.setText(f"{self.tr('output_folder')}: {self.screenshots_folder}")
-        else:
-            self.folderLabel.setText(self.tr("output_folder_not_set"))
-        self.save_settings()
+
+    def update_language_combo_box(self):
+        """Update the language combo box to reflect the current language."""
+        language_name = {v: k for k, v in SUPPORTED_LANGUAGES.items()}.get(self.language_code, "English")
+        index = self.languageComboBox.findText(language_name, Qt.MatchFixedString)
+        if index >= 0:
+            self.languageComboBox.setCurrentIndex(index)
+
+    def export_settings(self):
+        """Export the current settings to a file."""
+        options = QFileDialog.Options()
+        fileName, _ = QFileDialog.getSaveFileName(self, self.tr("export_settings"), "", "JSON Files (*.json)", options=options)
+        if fileName:
+            with open(fileName, 'w') as file:
+                settings = {
+                    'screenshots_folder': self.screenshots_folder,
+                    'dark_mode_enabled': self.dark_mode_enabled,
+                    'interval_minutes': self.intervalInput.text(),
+                    'screenshot_format': self.formatComboBox.currentText(),
+                    'retention_period_days': self.retentionInput.text(),
+                    'selected_monitors': [self.monitorCheckboxes.layout().itemAt(i).widget().isChecked() for i in range(self.monitorCheckboxes.layout().count())],
+                    'language_code': self.language_code,
+                    'is_capturing': self.is_capturing
+                }
+                json.dump(settings, file)
+            QMessageBox.information(self, self.tr("export_successful"), self.tr("settings_exported_successfully"))
+
+    def import_settings(self):
+        """Import settings from a file."""
+        options = QFileDialog.Options()
+        fileName, _ = QFileDialog.getOpenFileName(self, self.tr("import_settings"), "", "JSON Files (*.json)", options=options)
+        if fileName:
+            with open(fileName, 'r') as file:
+                settings = json.load(file)
+                self.apply_settings(settings)
+            QMessageBox.information(self, self.tr("import_successful"), self.tr("settings_imported_successfully"))
+            self.load_settings()
 
     def open_screenshot_viewer(self):
+        """Open the system's file explorer to the screenshot folder."""
         if not self.screenshots_folder:
             QMessageBox.warning(self, self.tr("output_folder_not_set"), self.tr("please_set_output_folder"))
-            return    
-        if self.screenshots_folder:
-            viewer = ScreenshotViewer(self.screenshots_folder, self.tr)
-            viewer.exec_()
+            return
+
+        # Open the screenshots folder in the system's file explorer
+        if os.name == 'nt':  # Windows
+            os.startfile(self.screenshots_folder)
+        elif os.name == 'posix':  # macOS, Linux
+            subprocess.Popen(['open', self.screenshots_folder] if sys.platform == 'darwin' else ['xdg-open', self.screenshots_folder])
+        else:
+            QMessageBox.warning(self, self.tr("unsupported_os"), self.tr("file_explorer_not_supported"))
 
     def show_disk_space_info(self):
+        """Show disk space information for the screenshots folder."""
         if self.screenshots_folder:
             total, used, free = shutil.disk_usage(self.screenshots_folder)
             total_gb = total / (1024 ** 3)
@@ -475,6 +453,7 @@ class WorkTrackerApp(QWidget):
             QMessageBox.warning(self, self.tr("output_folder_not_set"), self.tr("please_set_output_folder"))
 
     def clean_folders(self):
+        """Clean old folders from the screenshots directory."""
         if not self.screenshots_folder:
             QMessageBox.warning(self, self.tr("output_folder_not_set"), self.tr("please_set_output_folder"))
             return
@@ -510,12 +489,14 @@ class WorkTrackerApp(QWidget):
                     self.delete_selected_folders(selected_folders)
 
     def load_folders(self):
+        """Load folders from the screenshots directory."""
         self.folderListWidget.clear()
         if self.screenshots_folder:
             folders = [f for f in os.listdir(self.screenshots_folder) if os.path.isdir(os.path.join(self.screenshots_folder, f))]
             self.folderListWidget.addItems(folders)
 
     def delete_selected_folders(self, selected_folders):
+        """Delete the selected folders from the screenshots directory."""
         for folder in selected_folders:
             folder_path = os.path.join(self.screenshots_folder, folder)
             if os.path.isdir(folder_path):
@@ -530,6 +511,7 @@ class WorkTrackerApp(QWidget):
                     QMessageBox.warning(self, self.tr("error_deleting_folder"), f"{self.tr('error_deleting_folder')}: {folder} - {e}")
 
     def automatic_cleanup(self):
+        """Automatically clean up old files and folders."""
         if self.screenshots_folder:
             now = time.time()
             retention_time = self.retention_period_days * 86400  # Convert days to seconds
@@ -544,14 +526,22 @@ class WorkTrackerApp(QWidget):
                         shutil.rmtree(dir_path)
 
     def update_system_status(self):
+        """Update system status information (CPU and memory usage)."""
         cpu_usage = psutil.cpu_percent()
         memory_usage = psutil.virtual_memory().percent
         self.cpu_label.setText(f"{self.tr('cpu_usage')}: {cpu_usage}%")
         self.memory_label.setText(f"{self.tr('memory_usage')}: {memory_usage}%")
 
+    def get_language_name(self, code):
+        """Get the language name from the code."""
+        for name, lang_code in SUPPORTED_LANGUAGES.items():
+            if lang_code == code:
+                return name
+        return "English"
+
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    # Use icon_path for consistency
     app.setWindowIcon(QIcon(icon_path))
     ex = WorkTrackerApp()
     ex.show()
